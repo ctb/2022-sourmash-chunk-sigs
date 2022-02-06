@@ -1,9 +1,49 @@
 #! /usr/bin/env python
+"""
+Break large sketches into many small sketches.
+"""
 import sys
 import argparse
 
 import sourmash
 from sourmash import sourmash_args
+
+
+def chunkify_sketch(ss, chunksize):
+    """
+    Break signature 'ss' into signatures of size <= chunksize.
+    """
+    # small? no chunking needed!
+    if len(ss.minhash) < chunksize:
+        yield ss
+        return
+
+    name = ss.name
+    filename = ss.filename
+
+    source_mh = ss.minhash
+    mh = source_mh.copy_and_clear()
+    count = 0
+    total = 0
+
+    # iterate through, yielding signatures as we go.
+    for hashval in source_mh.hashes:
+        mh.add_hash(hashval)
+        count += 1
+        if count == chunksize:
+            total += len(mh)
+            yield sourmash.SourmashSignature(mh, name=name,
+                                             filename=filename)
+            mh = mh.copy_and_clear()
+
+            count = 0
+
+    # leftovers?
+    if mh:
+        yield sourmash.SourmashSignature(mh, name=name, filename=filename)
+        total += len(mh)
+
+    assert total == len(source_mh)
 
 
 def main():
@@ -14,40 +54,30 @@ def main():
     p.add_argument('-m', '--max-hashes-per-sig', default=10000, type=int)
     args = p.parse_args()
 
+    # save to args.output, which should be a zip file or something.
     with sourmash_args.SaveSignaturesToLocation(args.output) as save_sig:
+
+        # for every input file,
         for inp_filename in args.inp_sigs:
+
+            # load as signatures,
             print('loading from', inp_filename)
             db = sourmash.load_file_as_signatures(inp_filename)
-            for ss in db:
-                if len(ss.minhash) < args.max_hashes_per_sig:
-                    print('finished')
+
+            # iterate over,
+            for orig_ss in db:
+                n_chunks = 0
+                total = 0
+
+                # break into chunks.
+                for ss in chunkify_sketch(orig_ss, args.max_hashes_per_sig):
                     save_sig.add(ss)
-                else:
-                    name = ss.name
-                    filename = ss.filename
-                    mh_list = []
+                    total += len(ss.minhash)
+                    n_chunks += 1
 
-                    mh = ss.minhash.copy_and_clear()
-                    count = 0
-                    for hashval in ss.minhash.hashes:
-                        count += 1
-                        mh.add_hash(hashval)
-                        if count == args.max_hashes_per_sig:
-                            print('new', count)
-                            mh_list.append(mh)
-                            mh = mh.copy_and_clear()
-                            count = 0
-
-                    if mh:
-                        mh_list.append(mh)
-
-                    for mh in mh_list:
-                        new_ss = sourmash.SourmashSignature(mh,
-                                                            name=name,
-                                                            filename=filename)
-                        save_sig.add(new_ss)
-
-                    print(f'finished; 1 to {len(mh_list)} chunks.')
+                assert total == len(orig_ss.minhash)
+                print(f'finished sig; {n_chunks} chunks / {total} hashes.')
+            
 
 
 if __name__ == '__main__':
